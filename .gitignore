@@ -1,0 +1,16 @@
+# Downloaded engine (1-install.bat fetches it) - contains .venv and your .env with the API key
+pipecat-main/
+pipecat.zip
+
+# Secrets
+.env
+*.env
+.env.*
+
+# Build / tooling
+node_modules/
+ui-source/bundle.js
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
