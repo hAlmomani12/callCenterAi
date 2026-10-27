@@ -148,9 +148,23 @@ function attachBotAudioFromClient() {
 // load (offline or a blocked CDN), we retry once with the fully local manager.
 const forceLocal = new URLSearchParams(location.search).get("audio") === "local";
 
+// STUN/TURN servers come from the bot (/ice-config). Needed when hosted in the cloud.
+let iceServers = null;
+async function loadIceServers() {
+  if (iceServers) return iceServers;
+  try {
+    const r = await fetch("/ice-config", { cache: "no-store" });
+    if (r.ok) iceServers = (await r.json()).iceServers || null;
+  } catch {}
+  return iceServers;
+}
+
 function buildClient(local = forceLocal) {
   return new PipecatClient({
-    transport: new SmallWebRTCTransport(local ? { mediaManager: new WavMediaManager() } : {}),
+    transport: new SmallWebRTCTransport({
+      ...(local ? { mediaManager: new WavMediaManager() } : {}),
+      ...(iceServers ? { iceServers } : {}),
+    }),
     enableMic: true,
     enableCam: false,
     callbacks: {
@@ -203,6 +217,7 @@ async function startCall() {
   }, 30000);
   const attempt = async (local) => {
     gotBotOutput = false;
+    await loadIceServers();
     client = buildClient(local);
     await client.initDevices?.();
     await client.connect({ webrtcRequestParams: { endpoint: "/api/offer" } });

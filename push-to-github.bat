@@ -30,7 +30,9 @@ if errorlevel 1 (
   call git config user.email "%%GEMAIL%%"
   git config user.name "hAlmomani12"
 )
-git commit -m "first commit" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -m "Claude-Session: https://claude.ai/code/session_014pWHpLH3p8VdvDc4HngxN8" || echo (nothing new to commit)
+set "MSG=first commit"
+git rev-parse --verify HEAD >nul 2>nul && set "MSG=Update project"
+git commit -m "%MSG%" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -m "Claude-Session: https://claude.ai/code/session_014pWHpLH3p8VdvDc4HngxN8" || echo (nothing new to commit)
 
 git remote get-url origin >nul 2>nul
 if errorlevel 1 (

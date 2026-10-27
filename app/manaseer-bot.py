@@ -81,6 +81,96 @@ if "/client/" not in _existing:
     except ImportError:
         pass
 
+
+# ---- Cloud hosting helpers (Railway etc.) ----
+# All optional; nothing here changes how the bot runs on your own computer.
+#   DEMO_PASSWORD        -> browser asks for a password before showing the page
+#   CF_TURN_KEY_ID       -> Cloudflare TURN key id      } relay for the audio when the
+#   CF_TURN_API_TOKEN    -> Cloudflare TURN API token   } host has no UDP (e.g. Railway)
+import base64 as _b64
+import json as _json
+import secrets as _secrets
+import threading as _threading
+import urllib.request as _urlreq
+
+from fastapi import Request as _Request
+from fastapi.responses import JSONResponse as _JSONResponse
+from fastapi.responses import Response as _Response
+
+_ICE_SERVERS = [{"urls": ["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"]}]
+_DEMO_PASSWORD = os.getenv("DEMO_PASSWORD", "").strip()
+
+
+def _fetch_cloudflare_turn() -> list | None:
+    key_id, token = os.getenv("CF_TURN_KEY_ID", "").strip(), os.getenv("CF_TURN_API_TOKEN", "").strip()
+    if not (key_id and token):
+        return None
+    req = _urlreq.Request(
+        f"https://rtc.live.cloudflare.com/v1/turn/keys/{key_id}/credentials/generate-ice-servers",
+        data=_json.dumps({"ttl": 172800}).encode(),
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with _urlreq.urlopen(req, timeout=15) as r:
+            servers = _json.loads(r.read())["iceServers"]
+    except Exception as e:  # keep running with STUN only
+        logger.error(f"Could not get Cloudflare TURN credentials: {e}")
+        return None
+    out = []
+    for srv in servers if isinstance(servers, list) else [servers]:
+        urls = srv.get("urls", [])
+        urls = [urls] if isinstance(urls, str) else urls
+        urls = [u for u in urls if ":53" not in u]  # port 53 times out in browsers
+        if urls:
+            out.append({**srv, "urls": urls})
+    return out or None
+
+
+def _prepare_cloud():
+    """Runs once before the server starts."""
+    global _ICE_SERVERS
+    turn = _fetch_cloudflare_turn()
+    if turn:
+        _ICE_SERVERS = turn
+        os.environ["PIPECAT_ICE_SERVERS"] = _json.dumps(turn)  # the bot side uses the same relay
+        logger.info("Cloudflare TURN relay enabled")
+        # TURN credentials last 48h: restart ourselves after 40h so the host starts a fresh copy.
+        _t = _threading.Timer(40 * 3600, lambda: os._exit(3))
+        _t.daemon = True
+        _t.start()
+    if _DEMO_PASSWORD:
+        logger.info("Demo password protection enabled")
+
+
+@_runner_app.get("/ice-config", include_in_schema=False)
+async def _ice_config():
+    return _JSONResponse({"iceServers": _ICE_SERVERS}, headers={"Cache-Control": "no-store"})
+
+
+@_runner_app.get("/healthz", include_in_schema=False)
+async def _healthz():
+    return {"ok": True}
+
+
+@_runner_app.middleware("http")
+async def _password_gate(request: _Request, call_next):
+    if not _DEMO_PASSWORD or request.url.path == "/healthz":
+        return await call_next(request)
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("basic "):
+        try:
+            _user, _, pw = _b64.b64decode(auth[6:]).decode("utf-8").partition(":")
+            if _secrets.compare_digest(pw, _DEMO_PASSWORD):
+                return await call_next(request)
+        except Exception:
+            pass
+    return _Response(
+        "Password required",
+        status_code=401,
+        headers={"WWW-Authenticate": 'Basic realm="Manaseer demo", charset="UTF-8"'},
+    )
+
 SYSTEM_PROMPT = f"""إنت موظف خدمة عملاء بشركة المناصير للزيوت والمحروقات بالأردن، وبتحكي مع الزبون على التلفون.
 احكِ دايماً باللهجة الأردنية العامية، بطريقة مهذبة ودافية وطبيعية زي البني آدم، مش فصحى ومش روبوت.
 استعمل كلمات زي: "أهلين"، "تكرم"، "ولا يهمك"، "هسّا"، "بدّك"، "شو"، "منيح"، "مزبوط"، "يعطيك العافية".
@@ -280,4 +370,5 @@ async def bot(runner_args: RunnerArguments):
 if __name__ == "__main__":
     from pipecat.runner.run import main
 
+    _prepare_cloud()
     main()

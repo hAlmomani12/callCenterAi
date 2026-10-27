@@ -15,6 +15,7 @@ Arabic (Jordanian dialect) voice customer-service demo for Al-Manaseer Oil & Gas
 | `app/manaseer-bot.py` | The bot: OpenAI Realtime speech-to-speech, Arabic transcription, Jordanian persona, serves the custom UI |
 | `app/ui.html` | Built customer page (single file, images embedded) |
 | `ui-source/` | Source for the page (`app.js`, `template2.html`, images, `build.py`) |
+| `Dockerfile`, `railway.json` | Cloud deployment (Railway or any Docker host) |
 
 ## Run (Windows)
 
@@ -23,6 +24,25 @@ Arabic (Jordanian dialect) voice customer-service demo for Al-Manaseer Oil & Gas
 3. In the browser, click **ابدأ المكالمة**.
 
 The original Pipecat page is still available at `http://localhost:7860/client-old/`.
+
+## Deploy to Railway
+
+The repo includes a `Dockerfile` and `railway.json`, so Railway builds it automatically.
+
+1. On [railway.com](https://railway.com): **New Project → Deploy from GitHub repo → `callCenterAi`**.
+2. In the service, open **Variables** and add:
+
+   | Variable | Value |
+   | --- | --- |
+   | `OPENAI_API_KEY` | your OpenAI key |
+   | `DEMO_PASSWORD` | a password to share with the client (protects your key) |
+   | `CF_TURN_KEY_ID` | Cloudflare TURN key id |
+   | `CF_TURN_API_TOKEN` | Cloudflare TURN API token |
+   | `BOT_VOICE` | optional: `cedar`, `marin`, `ash`, `coral` |
+
+3. **Settings → Networking → Generate Domain**. Open `https://<your-domain>/client/` and log in with any username and the `DEMO_PASSWORD`.
+
+Railway has no inbound UDP, so the voice audio goes through a TURN relay. Create a free one in the Cloudflare dashboard under **Realtime → TURN Server** (the first 1,000 GB are free). Without TURN, the page opens but calls usually have no audio.
 
 ## Rebuild the UI
 

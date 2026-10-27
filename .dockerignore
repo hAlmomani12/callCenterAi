@@ -1,0 +1,6 @@
+pipecat-main
+node_modules
+ui-source
+.git
+*.bat
+.env
