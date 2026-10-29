@@ -88,6 +88,7 @@ if "/client/" not in _existing:
 #   CF_TURN_KEY_ID       -> Cloudflare TURN key id      } relay for the audio when the
 #   CF_TURN_API_TOKEN    -> Cloudflare TURN API token   } host has no UDP (e.g. Railway)
 import base64 as _b64
+import time
 import re as _re
 import json as _json
 import secrets as _secrets
@@ -105,18 +106,36 @@ _DEMO_PASSWORD = os.getenv("DEMO_PASSWORD", "").strip()
 def _fetch_cloudflare_turn() -> list | None:
     key_id, token = os.getenv("CF_TURN_KEY_ID", "").strip(), os.getenv("CF_TURN_API_TOKEN", "").strip()
     if not (key_id and token):
+        logger.warning("CF_TURN_KEY_ID / CF_TURN_API_TOKEN not set: no TURN relay (calls may have no audio on cloud hosts)")
         return None
-    req = _urlreq.Request(
-        f"https://rtc.live.cloudflare.com/v1/turn/keys/{key_id}/credentials/generate-ice-servers",
-        data=_json.dumps({"ttl": 172800}).encode(),
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with _urlreq.urlopen(req, timeout=15) as r:
-            servers = _json.loads(r.read())["iceServers"]
-    except Exception as e:  # keep running with STUN only
-        logger.error(f"Could not get Cloudflare TURN credentials: {e}")
+    url = f"https://rtc.live.cloudflare.com/v1/turn/keys/{key_id}/credentials/generate-ice-servers"
+    servers = None
+    for attempt in range(1, 4):
+        req = _urlreq.Request(
+            url,
+            data=_json.dumps({"ttl": 172800}).encode(),
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                # Cloudflare can block Python's default "Python-urllib" user agent.
+                "User-Agent": "callCenterAi/1.0 (+https://github.com/hAlmomani12/callCenterAi)",
+            },
+            method="POST",
+        )
+        try:
+            with _urlreq.urlopen(req, timeout=15) as r:
+                servers = _json.loads(r.read())["iceServers"]
+            break
+        except Exception as e:  # keep running with STUN only
+            body = ""
+            try:
+                body = e.read()[:300].decode("utf-8", "replace")  # HTTPError carries Cloudflare's reason
+            except Exception:
+                pass
+            logger.error(f"Could not get Cloudflare TURN credentials (attempt {attempt}/3): {e} {body}")
+            time.sleep(2 * attempt)
+    if servers is None:
         return None
     out = []
     for srv in servers if isinstance(servers, list) else [servers]:
@@ -135,7 +154,7 @@ def _prepare_cloud():
     if turn:
         _ICE_SERVERS = turn
         os.environ["PIPECAT_ICE_SERVERS"] = _json.dumps(turn)  # the bot side uses the same relay
-        logger.info("Cloudflare TURN relay enabled")
+        logger.info(f"Cloudflare TURN relay enabled ({sum(len(x.get('urls', [])) for x in turn)} relay URLs)")
         # TURN credentials last 48h: restart ourselves after 40h so the host starts a fresh copy.
         _t = _threading.Timer(40 * 3600, lambda: os._exit(3))
         _t.daemon = True
@@ -146,7 +165,8 @@ def _prepare_cloud():
 
 @_runner_app.get("/ice-config", include_in_schema=False)
 async def _ice_config():
-    return _JSONResponse({"iceServers": _ICE_SERVERS}, headers={"Cache-Control": "no-store"})
+    relay = any("turn:" in u or "turns:" in u for srv in _ICE_SERVERS for u in (srv.get("urls") or []))
+    return _JSONResponse({"relay": relay, "iceServers": _ICE_SERVERS}, headers={"Cache-Control": "no-store"})
 
 
 @_runner_app.get("/healthz", include_in_schema=False)
