@@ -23,11 +23,21 @@ copy /Y "%~dp0app\ui.html" "%~dp0pipecat-main\examples\realtime\ui.html" >nul
 copy /Y "%~dp0knowledge_base.md" "%~dp0pipecat-main\examples\realtime\knowledge_base.md" >nul
 
 cd /d "%~dp0pipecat-main"
-if not exist ".env" (
-  echo.
-  set /p "KEY=Paste your OpenAI API key (starts with sk-) and press Enter: "
-  call >".env" echo OPENAI_API_KEY=%%KEY%%
+if exist ".env" goto have_key
+:ask_key
+echo.
+set "KEY="
+set /p "KEY=Paste your OpenAI API key (starts with sk-) and press Enter: "
+if not defined KEY (
+  echo No key entered. Try again.
+  goto ask_key
 )
+if /i not "%KEY:~0,3%"=="sk-" (
+  echo That doesn't look like an OpenAI key ^(it should start with sk-^). Try again.
+  goto ask_key
+)
+>".env" echo OPENAI_API_KEY=%KEY%
+:have_key
 
 echo.
 echo Choose a voice (auto-selects 1 in 5 seconds):
@@ -43,10 +53,11 @@ if errorlevel 4 set "BOT_VOICE=coral"
 echo Voice: %BOT_VOICE%
 
 echo.
-echo Starting... the browser will open by itself in a few seconds.
+echo Starting... the browser will open by itself as soon as the bot is ready.
 echo Keep this window open during the call. Close it to stop the bot.
 echo.
-start "" cmd /c "timeout /t 15 /nobreak >nul & start http://localhost:7860/client/?v=%RANDOM%%RANDOM%"
+rem Open the browser as soon as the bot answers (up to 3 minutes on the first run).
+start "" /min powershell -NoProfile -WindowStyle Hidden -Command "for($i=0;$i -lt 180;$i++){try{Invoke-WebRequest 'http://localhost:7860/healthz' -UseBasicParsing -TimeoutSec 2 | Out-Null; Start-Process 'http://localhost:7860/client/?v=%RANDOM%%RANDOM%'; break}catch{Start-Sleep 1}}"
 uv run python examples\realtime\manaseer-bot.py
 echo.
 echo The bot stopped. If you see an error above, take a screenshot.

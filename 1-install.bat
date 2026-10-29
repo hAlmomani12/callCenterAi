@@ -30,7 +30,8 @@ echo [2/3] Downloading Pipecat from GitHub...
 if exist "pipecat-main\pyproject.toml" (
   echo       Already downloaded - skipping.
 ) else (
-  powershell -NoProfile -Command "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest 'https://github.com/pipecat-ai/pipecat/archive/refs/heads/main.zip' -OutFile 'pipecat.zip'; Expand-Archive 'pipecat.zip' -DestinationPath '.' -Force; Remove-Item 'pipecat.zip'"
+  rem Pinned to the same Pipecat version as the Dockerfile, so a new release can't break the bot.
+  powershell -NoProfile -Command "$ProgressPreference='SilentlyContinue'; $ref='9d03e5b42b1e2c853a8a92856484e647ccfe1b22'; Invoke-WebRequest ('https://github.com/pipecat-ai/pipecat/archive/' + $ref + '.zip') -OutFile 'pipecat.zip'; Expand-Archive 'pipecat.zip' -DestinationPath '.' -Force; Remove-Item 'pipecat.zip'; if (Test-Path 'pipecat-main') { Remove-Item 'pipecat-main' -Recurse -Force }; Rename-Item ('pipecat-' + $ref) 'pipecat-main'"
 )
 if not exist "pipecat-main\pyproject.toml" (
   echo.

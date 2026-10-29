@@ -47,7 +47,7 @@ from pipecat.workers.runner import WorkerRunner
 load_dotenv(override=True)
 
 _KB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "knowledge_base.md")
-with open(_KB_PATH, encoding="utf-8") as _f:
+with open(_KB_PATH, encoding="utf-8-sig") as _f:
     KNOWLEDGE_BASE = _f.read()
 
 
@@ -88,6 +88,7 @@ if "/client/" not in _existing:
 #   CF_TURN_KEY_ID       -> Cloudflare TURN key id      } relay for the audio when the
 #   CF_TURN_API_TOKEN    -> Cloudflare TURN API token   } host has no UDP (e.g. Railway)
 import base64 as _b64
+import re as _re
 import json as _json
 import secrets as _secrets
 import threading as _threading
@@ -121,7 +122,7 @@ def _fetch_cloudflare_turn() -> list | None:
     for srv in servers if isinstance(servers, list) else [servers]:
         urls = srv.get("urls", [])
         urls = [urls] if isinstance(urls, str) else urls
-        urls = [u for u in urls if ":53" not in u]  # port 53 times out in browsers
+        urls = [u for u in urls if not _re.search(r":53(\?|$)", u)]  # port 53 times out in browsers; keep 5349
         if urls:
             out.append({**srv, "urls": urls})
     return out or None
@@ -153,6 +154,24 @@ async def _healthz():
     return {"ok": True}
 
 
+class _WebSocketGate:
+    """HTTP middleware doesn't see WebSockets. The demo page doesn't use them, so when a
+    password is set we refuse every WebSocket (e.g. the telephony /ws route), which would
+    otherwise let anyone start a bot session on your OpenAI key."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "websocket" and _DEMO_PASSWORD:
+            await send({"type": "websocket.close", "code": 1008})
+            return
+        await self.app(scope, receive, send)
+
+
+_runner_app.add_middleware(_WebSocketGate)
+
+
 @_runner_app.middleware("http")
 async def _password_gate(request: _Request, call_next):
     if not _DEMO_PASSWORD or request.url.path == "/healthz":
@@ -170,6 +189,17 @@ async def _password_gate(request: _Request, call_next):
         status_code=401,
         headers={"WWW-Authenticate": 'Basic realm="Manaseer demo", charset="UTF-8"'},
     )
+
+_VOICES = {"alloy", "ash", "ballad", "cedar", "coral", "echo", "marin", "sage", "shimmer", "verse"}
+
+
+def _bot_voice() -> str:
+    v = os.getenv("BOT_VOICE", "cedar").strip().lower()
+    if v not in _VOICES:
+        logger.warning(f"Unknown BOT_VOICE '{v}', using 'cedar'")
+        return "cedar"
+    return v
+
 
 SYSTEM_PROMPT = f"""إنت موظف خدمة عملاء بشركة المناصير للزيوت والمحروقات بالأردن، وبتحكي مع الزبون على التلفون.
 احكِ دايماً باللهجة الأردنية العامية، بطريقة مهذبة ودافية وطبيعية زي البني آدم، مش فصحى ومش روبوت.
@@ -269,7 +299,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
                         noise_reduction=InputAudioNoiseReduction(type="near_field"),
                     ),
                     output=AudioOutput(
-                        voice=os.getenv("BOT_VOICE", "cedar"),
+                        voice=_bot_voice(),
                         speed=1.05,
                     ),
                 ),

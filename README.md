@@ -25,6 +25,17 @@ Arabic (Jordanian dialect) voice customer-service demo for Al-Manaseer Oil & Gas
 
 The original Pipecat page is still available at `http://localhost:7860/client-old/`.
 
+## Deploy to Render (recommended right now)
+
+Railway has paused new sign-ups, so Render is the easiest option. The same `Dockerfile` works without changes.
+
+1. On [render.com](https://render.com): **New → Web Service → connect `callCenterAi`**. Render detects the Dockerfile.
+2. Instance type **Free**; under Advanced set **Health Check Path** to `/healthz`.
+3. Add the same environment variables as in the Railway table below.
+4. After the build, open `https://<your-service>.onrender.com/client/`.
+
+The free plan sleeps after 15 minutes without traffic and takes about a minute to wake up, so open the link shortly before a demo.
+
 ## Deploy to Railway
 
 The repo includes a `Dockerfile` and `railway.json`, so Railway builds it automatically.

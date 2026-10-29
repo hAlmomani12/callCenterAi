@@ -37,8 +37,8 @@ function setPhase(next) {
   if (next !== "connecting") clearTimeout(connectTimer);
   document.body.dataset.phase = next;
   const live = next === "live";
-  ui.call.disabled = next === "connecting" || next === "ending";
-  ui.callLabel.textContent = live ? "إنهاء المكالمة" : next === "connecting" ? "عم نوصل…" : "ابدأ المكالمة";
+  ui.call.disabled = next === "ending";
+  ui.callLabel.textContent = live ? "إنهاء المكالمة" : next === "connecting" ? "إلغاء الاتصال" : "ابدأ المكالمة";
   ui.call.setAttribute("aria-pressed", String(live));
   ui.mic.disabled = !live;
   if (next === "idle") { setStatus("off", "غير متصل"); speaker = "none"; }
@@ -194,7 +194,7 @@ function buildClient(local = forceLocal) {
       onBotOutput: (d) => { gotBotOutput = true; onBotText(d?.text); },
       // Older/other bots only send TTS text; use it only if bot-output never arrives.
       onBotTtsText: (d) => { if (!gotBotOutput) onBotText(d?.text); },
-      onDeviceError: () => showError("ما قدرنا نوصل للمايكروفون. اسمح للمتصفح يستعمله من أيقونة القفل جنب الرابط، وبعدين جرّب مرة ثانية."),
+      onDeviceError: () => { micError = true; showError(MIC_ERROR); },
       onError: (m) => {
         const t = m?.data?.message || m?.data?.error || "";
         showError(t ? `صار خطأ بالمكالمة: ${t}` : "صار خطأ بالمكالمة. تأكد إن البوت شغّال بالنافذة السوداء وجرّب مرة ثانية.");
@@ -204,6 +204,11 @@ function buildClient(local = forceLocal) {
 }
 
 let connectTimer = null;
+let micError = false;
+let attemptId = 0;
+const MIC_ERROR = "ما قدرنا نوصل للمايكروفون. اسمح للمتصفح يستعمله من أيقونة القفل جنب الرابط، وبعدين جرّب مرة ثانية.";
+const isMicProblem = (e) => micError || /NotAllowed|Permission|microphone|NotFound|NotReadable|Requested device/i.test(`${e?.name} ${e?.message} ${e}`);
+const isAudioLibProblem = (e) => /call object bundle|call-machine|daily/i.test(`${e?.message} ${e}`);
 
 async function startCall() {
   showError("");
@@ -213,32 +218,39 @@ async function startCall() {
     if (phase !== "connecting") return;
     try { await client?.disconnect(); } catch {}
     setPhase("idle");
-    showError("البوت ما ردّ. شوف النافذة السوداء: إذا في خطأ بمفتاح OpenAI، شغّل 4-change-key.bat وجرّب مرة ثانية.");
+    showError("البوت ما ردّ. تأكد إن مفتاح OpenAI صحيح (على جهازك: 3-change-key.bat)، وجرّب مرة ثانية.");
   }, 30000);
+  const myAttempt = ++attemptId;
+  micError = false;
   const attempt = async (local) => {
     gotBotOutput = false;
     await loadIceServers();
     client = buildClient(local);
     await client.initDevices?.();
+    if (myAttempt !== attemptId) return; // cancelled
     await client.connect({ webrtcRequestParams: { endpoint: "/api/offer" } });
   };
   try {
     try {
       await attempt(forceLocal);
     } catch (first) {
-      if (forceLocal) throw first;
+      // Only the audio library failing to download is worth a retry with the local manager.
+      if (forceLocal || myAttempt !== attemptId || isMicProblem(first) || !isAudioLibProblem(first)) throw first;
       console.warn("Default audio manager failed, retrying with local one", first);
       try { await client?.disconnect(); } catch {}
       await attempt(true);
     }
   } catch (e) {
+    if (myAttempt !== attemptId) return; // user cancelled; stay quiet
     console.error(e);
+    try { await client?.disconnect(); } catch {}
     setPhase("idle");
-    showError("ما قدرنا نبدأ المكالمة. تأكد إن البوت شغّال بالنافذة السوداء، وإن المتصفح مسموحله يستعمل المايكروفون.");
+    showError(isMicProblem(e) ? MIC_ERROR : "ما قدرنا نبدأ المكالمة. تأكد إن البوت شغّال (النافذة السوداء أو السيرفر) وجرّب مرة ثانية.");
   }
 }
 
 async function endCall() {
+  attemptId++;
   setPhase("ending");
   try { await client?.disconnect(); } catch (e) { console.error(e); }
   ui.audio.srcObject = null;
@@ -246,7 +258,7 @@ async function endCall() {
   setPhase("idle");
 }
 
-ui.call.addEventListener("click", () => (phase === "live" ? endCall() : startCall()));
+ui.call.addEventListener("click", () => (phase === "live" || phase === "connecting" ? endCall() : startCall()));
 ui.mic.addEventListener("click", () => {
   if (!client || phase !== "live") return;
   const next = !client.isMicEnabled;
