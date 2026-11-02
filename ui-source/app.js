@@ -115,12 +115,22 @@ function onUserTranscript(data) {
   if (data.final) userBubble = null;
 }
 
-function onBotText(text) {
+// Joins the bot's text as it streams in. Speech-to-speech models (OpenAI Realtime) send
+// pieces of words that already carry their own spaces ("هلا و" + "غلا،" + " معك"), so they
+// must be joined as-is. Only whole words, or whole sentences from a separate TTS, need a space.
+function joinChunk(cur, text, kind) {
+  if (!cur) return text;
+  if (/\s$/.test(cur) || /^\s/.test(text)) return cur + text;
+  if (kind === "word") return cur + " " + text;
+  if (kind === "sentence" && /[.!?؟،,:;…]$/.test(cur) && !/^[.!?؟،,:;…]/.test(text)) return cur + " " + text;
+  return cur + text;
+}
+
+function onBotText(text, kind) {
   if (!text) return;
   userBubble = null;
   if (!botBubble) botBubble = addBubble("bot");
-  const cur = botBubble.textContent;
-  botBubble.textContent = cur ? `${cur}${/[\s]$/.test(cur) || /^[\s.,،؟!?]/.test(text) ? "" : " "}${text}` : text;
+  botBubble.textContent = joinChunk(botBubble.textContent, text, kind);
   botBubble.parentElement.scrollIntoView({ block: "end" });
 }
 
@@ -213,9 +223,9 @@ function buildClient(local = forceLocal) {
       onBotStartedSpeaking: () => { speaker = "bot"; updateCaption(); },
       onBotStoppedSpeaking: () => { if (speaker === "bot") speaker = "none"; updateCaption(); },
       onUserTranscript,
-      onBotOutput: (d) => { gotBotOutput = true; onBotText(d?.text); },
+      onBotOutput: (d) => { gotBotOutput = true; onBotText(d?.text, d?.aggregated_by || d?.text_type); },
       // Older/other bots only send TTS text; use it only if bot-output never arrives.
-      onBotTtsText: (d) => { if (!gotBotOutput) onBotText(d?.text); },
+      onBotTtsText: (d) => { if (!gotBotOutput) onBotText(d?.text, "sentence"); },
       onServerMessage: (data) => { if (data?.type === "ui-tool") handleScreenTool(data); },
       onDeviceError: () => { micError = true; showError(MIC_ERROR); },
       onError: (m) => {
