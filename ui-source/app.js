@@ -1,5 +1,9 @@
 import { PipecatClient } from "@pipecat-ai/client-js";
 import { SmallWebRTCTransport, WavMediaManager } from "@pipecat-ai/small-webrtc-transport";
+import { startRouter } from "./src/router.js";
+import { startEffects } from "./src/effects.js";
+import { routes, site, PAGE_TITLES } from "./src/pages.js";
+import { runTool, setToolNavigateHandler } from "./src/tools.js";
 
 const $ = (id) => document.getElementById(id);
 const ui = {
@@ -7,6 +11,7 @@ const ui = {
   micSelect: $("micSelect"), status: $("status"), statusText: $("statusText"),
   caption: $("caption"), timer: $("timer"), log: $("log"), empty: $("empty"),
   audio: $("botAudio"), error: $("error"), canvas: $("flame"),
+  dock: $("dock"), dockToggle: $("dockToggle"), toast: $("navToast"), toastText: $("navToastText"), toastBack: $("navToastBack"),
 };
 
 // ---------- state ----------
@@ -19,7 +24,7 @@ let userBubble = null, botBubble = null;
 let gotBotOutput = false;
 
 const CAPTIONS = {
-  idle: "اضغط «ابدأ المكالمة» وابدأ الحكي",
+  idle: "المساعد جاهز",
   connecting: "عم نوصلك بخدمة العملاء…",
   listening: "تفضّل، عم بسمعك",
   user: "عم بسمعك…",
@@ -55,6 +60,14 @@ function updateCaption() {
 function showError(msg) {
   ui.error.textContent = msg;
   ui.error.hidden = !msg;
+  if (msg) setDockOpen(true);
+}
+
+// ---------- call dock (stays on screen on every page) ----------
+function setDockOpen(open) {
+  ui.dock.dataset.open = String(open);
+  ui.dockToggle.setAttribute("aria-expanded", String(open));
+  ui.dockToggle.setAttribute("aria-label", open ? "صغّر لوحة المكالمة" : "كبّر لوحة المكالمة");
 }
 
 // ---------- timer ----------
@@ -82,6 +95,15 @@ function addBubble(who) {
   ui.log.append(li);
   li.scrollIntoView({ block: "end", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
   return body;
+}
+
+function addScreenNote(text) {
+  ui.empty.hidden = true;
+  const li = document.createElement("li");
+  li.className = "msg msg--screen";
+  li.textContent = text;
+  ui.log.append(li);
+  userBubble = null; botBubble = null;
 }
 
 function onUserTranscript(data) {
@@ -194,6 +216,7 @@ function buildClient(local = forceLocal) {
       onBotOutput: (d) => { gotBotOutput = true; onBotText(d?.text); },
       // Older/other bots only send TTS text; use it only if bot-output never arrives.
       onBotTtsText: (d) => { if (!gotBotOutput) onBotText(d?.text); },
+      onServerMessage: (data) => { if (data?.type === "ui-tool") handleScreenTool(data); },
       onDeviceError: () => { micError = true; showError(MIC_ERROR); },
       onError: (m) => {
         const t = m?.data?.message || m?.data?.error || "";
@@ -202,6 +225,22 @@ function buildClient(local = forceLocal) {
     },
   });
 }
+
+// ---------- screen tools from the voice bot ----------
+async function handleScreenTool({ id, name, args }) {
+  const result = await runTool(name, args);
+  try { client?.sendClientMessage("ui-tool-result", { id, result }); } catch (e) { console.error(e); }
+  if (result.ok && result.page) addScreenNote(`عرضلك: ${result.page}`);
+}
+
+let toastTimer = null;
+setToolNavigateHandler((page) => {
+  ui.toastText.textContent = `نقلتك على: ${PAGE_TITLES[page] || "الصفحة"}`;
+  ui.toast.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { ui.toast.hidden = true; }, 7000);
+});
+ui.toastBack.addEventListener("click", () => { ui.toast.hidden = true; history.back(); });
 
 let connectTimer = null;
 let micError = false;
@@ -212,6 +251,7 @@ const isAudioLibProblem = (e) => /call object bundle|call-machine|daily/i.test(`
 
 async function startCall() {
   showError("");
+  setDockOpen(true);
   setPhase("connecting");
   clearTimeout(connectTimer);
   connectTimer = setTimeout(async () => {
@@ -268,14 +308,14 @@ ui.mic.addEventListener("click", () => {
 ui.micSelect.addEventListener("change", () => { if (client && ui.micSelect.value) client.updateMic(ui.micSelect.value); });
 addEventListener("beforeunload", () => { try { client?.disconnect(); } catch {} });
 
-// ---------- hero "start call" shortcuts ----------
-document.querySelectorAll("[data-start-call]").forEach((b) =>
-  b.addEventListener("click", (e) => {
-    e.preventDefault();
-    document.getElementById("call")?.scrollIntoView({ behavior: reduceMotion() ? "auto" : "smooth", block: "center" });
-    if (phase === "idle") startCall();
-  })
-);
+// ---------- "start call" buttons inside pages ----------
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-start-call]");
+  if (!b) return;
+  e.preventDefault();
+  if (phase === "idle") startCall(); else setDockOpen(true);
+});
+ui.dockToggle.addEventListener("click", () => setDockOpen(ui.dock.dataset.open !== "true"));
 function reduceMotion() { return matchMedia("(prefers-reduced-motion: reduce)").matches; }
 
 // ---------- sunburst voice visual (echoes the Manaseer mark) ----------
@@ -355,6 +395,20 @@ function frame(t) {
   requestAnimationFrame(frame);
 }
 
+async function loadSiteData() {
+  try {
+    const r = await fetch("/site-data", { cache: "no-store" });
+    if (r.ok) {
+      const d = await r.json();
+      site.prices = d.prices_fils || {}; site.gas = d.gas_cylinder_jod; site.month = d.price_month || ""; site.phone = d.phone || site.phone;
+    }
+  } catch {}
+}
+
 resize();
 setPhase("idle");
+setDockOpen(false); // opens by itself when a call starts or an error needs attention
 requestAnimationFrame(frame);
+startEffects();
+const view = document.getElementById("view");
+loadSiteData().finally(() => startRouter({ routes, view }));

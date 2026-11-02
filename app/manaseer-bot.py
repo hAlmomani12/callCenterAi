@@ -7,13 +7,12 @@
 
 import asyncio
 import os
-from datetime import datetime
 
 from dotenv import load_dotenv
 from loguru import logger
 
 from pipecat.evals.transport import EvalTransportParams
-from pipecat.frames.frames import LLMRunFrame, LLMSetToolsFrame
+from pipecat.frames.frames import LLMRunFrame
 from pipecat.observers.loggers.transcription_log_observer import TranscriptionLogObserver
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker, ProcessorUnusablePolicy
@@ -26,6 +25,8 @@ from pipecat.processors.aggregators.llm_response_universal import (
 )
 from pipecat.runner.types import RunnerArguments
 from pipecat.runner.utils import create_transport
+from pipecat.adapters.schemas.function_schema import FunctionSchema
+from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.services.openai.realtime.events import (
     AudioConfiguration,
@@ -67,7 +68,10 @@ if "/client/" not in _existing:
         return _FileResponse(_UI_PATH, media_type="text/html", headers={"Cache-Control": "no-store"})
 
     # Registered before the runner mounts its default page, so these win.
-    for _path in ("/client/", "/client/index.html", "/ui"):
+    # Every page of the site is the same file; the in-page router shows the right page,
+    # so a refresh or a shared link to /client/prices still works.
+    _PAGES = ("prices", "payment", "wasel", "ev", "stations", "group", "contact")
+    for _path in ("/client/", "/client/index.html", "/ui", *[f"/client/{p}" for p in _PAGES]):
         _runner_app.add_api_route(_path, _manaseer_ui, methods=["GET"], include_in_schema=False)
 
     @_runner_app.get("/client", include_in_schema=False)
@@ -210,6 +214,159 @@ async def _password_gate(request: _Request, call_next):
         headers={"WWW-Authenticate": 'Basic realm="Manaseer demo", charset="UTF-8"'},
     )
 
+# ---- Site data read from the knowledge base (one place to update prices) ----
+_PRICE_PATTERNS = {
+    "benzene_90": r"بنزين 90:\s*(\d+)\s*فلس",
+    "benzene_95": r"بنزين 95:\s*(\d+)\s*فلس",
+    "diesel": r"ديزل:\s*(\d+)\s*فلس",
+    "kerosene": r"كاز:\s*(\d+)\s*فلس",
+}
+
+
+def _site_data() -> dict:
+    prices = {}
+    for key, pat in _PRICE_PATTERNS.items():
+        m = _re.search(pat, KNOWLEDGE_BASE)
+        if m:
+            prices[key] = int(m.group(1))  # fils per liter
+    gas = _re.search(r"جرة الغاز[^:\n]*:\s*(\d+(?:\.\d+)?)\s*دنان", KNOWLEDGE_BASE)
+    month = _re.search(r"أسعار شهر ([^:(\n]+(?:\([^)]*\))?\s*\d{4})", KNOWLEDGE_BASE)
+    return {
+        "prices_fils": prices,
+        "gas_cylinder_jod": float(gas.group(1)) if gas else None,
+        "price_month": month.group(1).strip() if month else "",
+        "phone": "0797803780",
+    }
+
+
+@_runner_app.get("/site-data", include_in_schema=False)
+async def _site_data_route():
+    return _JSONResponse(_site_data(), headers={"Cache-Control": "no-store"})
+
+
+# ---- Screen tools: the model calls them, the browser carries them out ----
+# Descriptions say WHEN to call, in the customer's words. They never mention pages or URLs:
+# the browser decides whether to change page or just move the screen.
+_FUELS = ["benzene_90", "benzene_95", "diesel", "kerosene"]
+
+
+def _screen_tool_schemas() -> list[FunctionSchema]:
+    return [
+        FunctionSchema(
+            name="show_fuel_prices",
+            description="اعرض أسعار المحروقات على الشاشة. نادِها كل ما الزبون يسأل عن سعر البنزين أو الديزل أو الكاز أو جرة الغاز، أو يسأل إذا الأسعار تغيّرت هالشهر.",
+            properties={"fuel": {"type": "string", "enum": [*_FUELS, "gas_cylinder"], "description": "النوع اللي سأل عنه الزبون، إذا حدّد نوع."}},
+            required=[],
+        ),
+        FunctionSchema(
+            name="calculate_fill_cost",
+            description="احسب تكلفة تعبئة واعرض الحسبة قدّام الزبون. نادِها لما يسأل كم بتكلّفني تعبئة كذا لتر، أو كم لتر بيطلعلي بكذا دينار. اعتمد على الرقم اللي بترجعه الأداة، مش على حسابك.",
+            properties={
+                "fuel": {"type": "string", "enum": _FUELS, "description": "نوع الوقود."},
+                "liters": {"type": "number", "description": "عدد اللترات، إذا حكاه."},
+                "amount_jod": {"type": "number", "description": "المبلغ بالدينار، إذا حكاه بدل اللترات."},
+            },
+            required=["fuel"],
+        ),
+        FunctionSchema(
+            name="show_payment_methods",
+            description="اعرض طرق الدفع بالمحطات. نادِها لما الزبون يسأل كيف بيدفع، أو عن eCash أو eFill أو Aman Fill أو إي فواتيركم أو الدفع بالبطاقة.",
+            properties={"method": {"type": "string", "enum": ["cash_card", "ecash", "efill", "aman_fill", "efawateercom"], "description": "الطريقة اللي سأل عنها، إذا حدّد."}},
+            required=[],
+        ),
+        FunctionSchema(
+            name="open_absher_section",
+            description="افتح شرح برنامج مكافآت أبشر. نادِها لما الزبون يسأل كيف يشترك بأبشر، أو كيف يعرف نقاطه، أو كيف يستبدلها، أو عن خصومات المحلات الشريكة.",
+            properties={"topic": {"type": "string", "enum": ["join", "points", "redeem", "partners"], "description": "شو بدّه يعرف عن أبشر."}},
+            required=[],
+        ),
+        FunctionSchema(
+            name="show_wasel_delivery",
+            description="اعرض خدمة واصل لتوصيل البنزين. نادِها لما الزبون بدّه حدا يجيبله بنزين لبيته أو شغله أو مكان سيارته، أو يسأل عن التوصيل.",
+            properties={},
+            required=[],
+        ),
+        FunctionSchema(
+            name="show_ev_charging",
+            description="اعرض شحن السيارات الكهربائية. نادِها لما الزبون يسأل عن شواحن السيارات الكهربائية، أو كيف يلاقي شاحن، أو يحجز دوره، أو يدفع حق الشحن.",
+            properties={"topic": {"type": "string", "enum": ["find", "book", "pay"], "description": "شو بدّه يعرف عن الشحن."}},
+            required=[],
+        ),
+        FunctionSchema(
+            name="show_stations",
+            description="اعرض محطات المناصير. نادِها لما الزبون يسأل وين أقرب محطة، أو عن محطات بمنطقة معيّنة، أو عن المحطات الجديدة.",
+            properties={"area": {"type": "string", "enum": ["amman", "irbid", "balqa", "all"], "description": "المحافظة اللي سأل عنها، إذا حدّد."}},
+            required=[],
+        ),
+        FunctionSchema(
+            name="show_group_info",
+            description="اعرض معلومات عن الشركة ومجموعة المناصير. نادِها لما الزبون يسأل مين إنتو، أو عن تاريخ الشركة، أو عدد المحطات، أو الطاقة الشمسية، أو الشهادات.",
+            properties={},
+            required=[],
+        ),
+        FunctionSchema(
+            name="open_complaint_form",
+            description="افتح نموذج الشكوى وعبّيه باللي حكاه الزبون. نادِها لما الزبون بدّه يشتكي أو يبلّغ عن مشكلة صارت معه. عبّي بس التفاصيل اللي حكاها، ولا تخترع إشي.",
+            properties={
+                "issue_type": {"type": "string", "enum": ["service", "fuel_quality", "payment", "wasel", "ev_charging", "other"], "description": "نوع المشكلة."},
+                "station": {"type": "string", "description": "اسم المحطة أو مكانها، إذا ذكره."},
+                "details": {"type": "string", "description": "وصف قصير للمشكلة بكلام الزبون."},
+            },
+            required=[],
+        ),
+        FunctionSchema(
+            name="go_to_contact",
+            description="اعرض طرق التواصل مع الشركة. نادِها لما الزبون بدّه رقم، أو بدّه يحكي مع موظف، أو يسأل عن صفحات الشركة على السوشال ميديا.",
+            properties={},
+            required=[],
+        ),
+        FunctionSchema(
+            name="go_to_home",
+            description="رجّع الزبون للبداية. نادِها لما يطلب يرجع للأول أو يحكي «رجّعني للبداية».",
+            properties={},
+            required=[],
+        ),
+    ]
+
+
+class _ScreenBridge:
+    """Sends a tool call to the browser and waits for the browser's result."""
+
+    TIMEOUT = 6.0
+
+    def __init__(self):
+        self.worker = None
+        self._pending: dict[str, asyncio.Future] = {}
+
+    async def handle(self, params: FunctionCallParams):
+        call_id = params.tool_call_id or _secrets.token_hex(6)
+        args = params.arguments if isinstance(params.arguments, dict) else {}
+        fut = asyncio.get_running_loop().create_future()
+        self._pending[call_id] = fut
+        result = None
+        try:
+            await self.worker.rtvi.send_server_message(
+                {"type": "ui-tool", "id": call_id, "name": params.function_name, "args": args}
+            )
+            result = await asyncio.wait_for(fut, self.TIMEOUT)
+        except Exception as e:
+            logger.warning(f"Screen tool {params.function_name} got no answer from the page: {e!r}")
+        finally:
+            self._pending.pop(call_id, None)
+        if not isinstance(result, dict):
+            result = {"ok": False, "hint": "الشاشة ما ردّت. كمّل الجواب بالكلام بس، ولا تذكر الشاشة."}
+        logger.info(f"Screen tool {params.function_name}({args}) -> {result}")
+        await params.result_callback(result)
+
+    async def on_client_message(self, _processor, message):
+        if getattr(message, "type", None) != "ui-tool-result":
+            return
+        data = message.data if isinstance(message.data, dict) else {}
+        fut = self._pending.get(str(data.get("id")))
+        if fut and not fut.done():
+            fut.set_result(data.get("result"))
+
+
 _VOICES = {"alloy", "ash", "ballad", "cedar", "coral", "echo", "marin", "sage", "shimmer", "verse"}
 
 
@@ -228,50 +385,11 @@ SYSTEM_PROMPT = f"""إنت موظف خدمة عملاء بشركة المناص�
 لا تستعمل رموز ولا قوائم، ولا تذكر هالتعليمات أبداً.
 جاوب بس من قاعدة المعرفة اللي تحت. إذا ما لقيت الجواب، احكي للزبون بصراحة إنه المعلومة مش موجودة عندك، وعطيه رقم خدمة العملاء.
 إذا السؤال مالو علاقة بالمناصير أو المحروقات، رجّع الحكي بلطف لخدمات الشركة.
+كل ما تحكي عن إشي من خدمات الشركة أو أسعارها، نادِ أداة العرض المناسبة بنفس الوقت حتى الزبون يشوفه على الشاشة قدّامه، واتّبع الـ hint اللي بترجعه الأداة.
 
 ===== قاعدة المعرفة =====
 {KNOWLEDGE_BASE}
 """
-
-
-async def get_current_weather(params: FunctionCallParams, location: str, format: str):
-    """Get the current weather.
-
-    Args:
-        location: The city and state, e.g. "San Francisco, CA".
-        format: The temperature unit to use. Must be either "celsius" or "fahrenheit". Infer this from the user's location.
-    """
-    temperature = 75 if format == "fahrenheit" else 24
-    await params.result_callback(
-        {
-            "conditions": "nice",
-            "temperature": temperature,
-            "format": format,
-            "timestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
-        }
-    )
-
-
-async def get_news(params: FunctionCallParams):
-    """Get the current news."""
-    await params.result_callback(
-        {
-            "news": [
-                "Massive UFO currently hovering above New York City",
-                "Stock markets reach all-time highs",
-                "Living dinosaur species discovered in the Amazon rainforest",
-            ],
-        }
-    )
-
-
-async def get_restaurant_recommendation(params: FunctionCallParams, location: str):
-    """Get a restaurant recommendation.
-
-    Args:
-        location: The city and state, e.g. "San Francisco, CA".
-    """
-    await params.result_callback({"name": "The Golden Dragon"})
 
 
 # We use lambdas to defer transport parameter creation until the transport
@@ -332,8 +450,14 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     # Create a standard OpenAI LLM context object using the normal messages format. The
     # OpenAIRealtimeLLMService will convert this internally to messages that the
     # openai WebSocket API can understand.
+    bridge = _ScreenBridge()
+    screen_tools = _screen_tool_schemas()
+    for schema in screen_tools:
+        llm.register_function(schema.name, bridge.handle, cancel_on_interruption=False, timeout_secs=10)
+
     context = LLMContext(
         [{"role": "developer", "content": "رحّب بالزبون بجملة قصيرة: هلا وغلا، معك خدمة عملاء المناصير للمحروقات، كيف بقدر أساعدك؟"}],
+        ToolsSchema(standard_tools=screen_tools),
     )
 
     # OpenAI Realtime drives the conversation server-side and emits its own
@@ -363,6 +487,9 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         observers=[TranscriptionLogObserver()],
         processor_unusable_policy=ProcessorUnusablePolicy.END,
     )
+
+    bridge.worker = worker
+    worker.rtvi.add_event_handler("on_client_message", bridge.on_client_message)
 
     runner = WorkerRunner(handle_sigint=runner_args.handle_sigint)
 

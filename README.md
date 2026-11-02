@@ -13,9 +13,21 @@ Arabic (Jordanian dialect) voice customer-service demo for Al-Manaseer Oil & Gas
 | `3-change-key.bat` | Removes the saved OpenAI key so you can enter a new one |
 | `knowledge_base.md` | Company facts the agent answers from (prices, payment, Absher, Wasel, EV charging). Update fuel prices monthly |
 | `app/manaseer-bot.py` | The bot: OpenAI Realtime speech-to-speech, Arabic transcription, Jordanian persona, serves the custom UI |
-| `app/ui.html` | Built customer page (single file, images embedded) |
-| `ui-source/` | Source for the page (`app.js`, `template2.html`, images, `build.py`) |
+| `app/ui.html` | Built customer site: 8 pages in one file (images embedded), client-side router |
+| `ui-source/` | Source for the site (`app.js`, `src/*.js`, `template3.html`, images, `build.py`) |
 | `Dockerfile`, `railway.json` | Cloud deployment (Railway or any Docker host) |
+
+## Voice-driven screen
+
+The assistant moves the customer around the site while it talks. Pages: home, prices (with a fill-cost calculator), payment & Absher, Wasel, EV charging, stations, group, contact & complaint form. Fuel prices are read from `knowledge_base.md` (served at `/site-data`), so the page and the bot always agree.
+
+How it works:
+
+- **Tools** (`app/manaseer-bot.py`): 11 screen tools (`show_fuel_prices`, `calculate_fill_cost`, `show_payment_methods`, `open_absher_section`, `show_wasel_delivery`, `show_ev_charging`, `show_stations`, `show_group_info`, `open_complaint_form`, `go_to_contact`, `go_to_home`). Descriptions say *when* to call them; they never mention pages or URLs. The server forwards each call to the browser (`ui-tool` RTVI message) and waits up to 6 s for its result.
+- **Navigation bridge** (`ui-source/src/nav.js`): `registerNavigator(fn)`, `goTo(href)`, `currentPath()`. The router registers itself at startup. Navigation is `history.pushState` only, so the WebRTC call never drops; `window.location` is used only if no navigator is registered yet.
+- **Decision inside the tool** (`ui-source/src/tools.js`): off-page → `goTo(page#section)`; already there → only update state. Tools that change state call `ensureScreen()` first.
+- **Store** (`ui-source/src/store.js`): `spotlightId`, `highlightId`, `focusSectionId` (+ calculator, station filter, complaint draft). `src/effects.js` scrolls, outlines or spotlights on change.
+- **`hint`**: every tool returns a short instruction for what the model says next.
 
 ## Run (Windows)
 
@@ -60,7 +72,7 @@ Railway has no inbound UDP, so the voice audio goes through a TURN relay. Create
 ```bash
 cd ui-source
 npm install
-npx esbuild app.js --bundle --format=iife --minify --target=es2020 --outfile=bundle.js
+npx esbuild app.js --bundle --format=iife --minify --target=es2020 --outfile=bundle.js   # bundles src/*.js too
 cd ..
 python ui-source/build.py
 ```
