@@ -60,6 +60,7 @@ const TOOLS = {
     setState({ calc: { fuel: f, liters: L, amountJod: A }, highlightId: "calc-result" });
     const r = computeFill(f, L, A);
     if (!r) return { ok: false, navigated, hint: "السعر مش متوفر هلأ. اعتذر وعطيه رقم خدمة العملاء." };
+    if (r.tooBig) return { ok: true, navigated, too_big: true, hint: "الرقم اللي سمعته كبير كثير على تعبئة وحدة. تأكد منه شو قصده بالزبط." };
     if (!r.liters || !r.totalJod) return { ok: true, navigated, price_fils: r.priceFils, hint: "الحاسبة مفتوحة. اسأله كم لتر أو كم دينار بدّه يعبّي." };
     return {
       ok: true, navigated, fuel: f, liters: r.liters, total_jod: r.totalJod, total_text: `${jod(r.totalJod * 1000)} دينار`,

@@ -197,6 +197,23 @@ _runner_app.add_middleware(_WebSocketGate)
 
 
 @_runner_app.middleware("http")
+async def _security_headers(request: _Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    # The page may use the microphone (for the call) and nothing else sensitive.
+    response.headers.setdefault("Permissions-Policy", "microphone=(self), camera=(), geolocation=(), payment=()")
+    return response
+
+
+# The site is one ~1 MB file (images inside); compress it for mobile data.
+from starlette.middleware.gzip import GZipMiddleware as _GZip
+
+_runner_app.add_middleware(_GZip, minimum_size=1024)
+
+
+@_runner_app.middleware("http")
 async def _password_gate(request: _Request, call_next):
     if not _DEMO_PASSWORD or request.url.path == "/healthz":
         return await call_next(request)

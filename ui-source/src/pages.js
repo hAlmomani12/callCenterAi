@@ -15,9 +15,12 @@ export const jod = (fils) => (fils / 1000).toLocaleString("en-US", { minimumFrac
 const link = (path, text, cls = "") => `<a href="/client${path === "/" ? "/" : path}" data-link class="${cls}">${text}</a>`;
 
 /** Shared by the calculator UI and the calculate_fill_cost tool. */
+export const MAX_LITERS = 1000, MAX_JOD = 1000; // one fill, not a tanker
+
 export function computeFill(fuel, liters, amountJod) {
   const p = site.prices[fuel];
   if (!p) return null;
+  if (liters > MAX_LITERS || amountJod > MAX_JOD) return { fuel, tooBig: true, priceFils: p };
   if (liters > 0) return { fuel, liters: +liters, totalJod: +(liters * p / 1000).toFixed(3), priceFils: p };
   if (amountJod > 0) return { fuel, liters: +(amountJod * 1000 / p).toFixed(2), totalJod: +amountJod, priceFils: p };
   return { fuel, liters: null, totalJod: null, priceFils: p };
@@ -123,6 +126,7 @@ const prices = {
       const v = parseFloat(input.value);
       const r = computeFill(fuel.value, mode() === "liters" ? v : 0, mode() === "amount" ? v : 0);
       if (!r) { out.textContent = "السعر مش متوفر هلأ."; return; }
+      if (r.tooBig) { out.textContent = `الرقم كبير كثير. الحاسبة لتعبئة وحدة لحد ${mode() === "liters" ? MAX_LITERS + " لتر" : MAX_JOD + " دينار"}.`; return; }
       out.textContent = r.liters && r.totalJod
         ? (mode() === "liters" ? `${r.liters} لتر ${FUEL_NAMES[r.fuel]} = ${jod(r.totalJod * 1000)} دينار` : `${jod(r.totalJod * 1000)} دينار = ${r.liters} لتر ${FUEL_NAMES[r.fuel]}`)
         : "اكتب رقم لتشوف النتيجة.";
@@ -303,7 +307,8 @@ const contact = {
         <label class="field">نوع المشكلة<select id="cmp-type">${Object.entries(ISSUE_NAMES).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}</select></label>
         <label class="field">المحطة أو المكان<input id="cmp-station" type="text" autocomplete="off" placeholder="مثلاً محطة جبل الحسين"></label>
         <label class="field">إيمتى صارت<input id="cmp-when" type="datetime-local"></label>
-        <label class="field field--wide">شو صار<textarea id="cmp-details" rows="4" placeholder="احكيلنا باختصار"></textarea></label>
+        <label class="field field--wide">شو صار (مطلوب)<textarea id="cmp-details" rows="4" placeholder="احكيلنا باختصار" aria-describedby="cmp-error"></textarea></label>
+        <p class="form-error" id="cmp-error" role="alert" hidden>اكتب شو صار معك حتى نجهّز الملخص.</p>
         <div class="field--wide form-actions"><button class="btn btn--primary" type="submit">جهّز الملخص</button></div>
       </form>
       <div class="summary" id="complaint-summary" hidden>
@@ -315,6 +320,10 @@ const contact = {
   mount(view) {
     const f = (id) => view.querySelector(id);
     const summary = () => {
+      const missing = !f("#cmp-details").value.trim();
+      f("#cmp-error").hidden = !missing;
+      f("#cmp-details").setAttribute("aria-invalid", String(missing));
+      if (missing) { f("#complaint-summary").hidden = true; f("#cmp-details").focus({ preventScroll: true }); return; }
       const lines = [
         `نوع المشكلة: ${ISSUE_NAMES[f("#cmp-type").value]}`,
         f("#cmp-station").value.trim() && `المحطة: ${f("#cmp-station").value.trim()}`,
@@ -333,7 +342,7 @@ const contact = {
       if (d.issue_type && ISSUE_NAMES[d.issue_type]) f("#cmp-type").value = d.issue_type;
       if (d.station) f("#cmp-station").value = d.station;
       if (d.details) f("#cmp-details").value = d.details;
-      summary();
+      if (d.details) summary();
     };
     apply(getState().complaint);
     const off = subscribe((s, ch) => { if (ch.includes("complaint") && view.contains(f("#complaint-form"))) apply(s.complaint); });
